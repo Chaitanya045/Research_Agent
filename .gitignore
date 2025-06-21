@@ -1,0 +1,42 @@
+# Environment variables
+.env
+
+# Python files
+expt.py
+web_page_summariser.py
+reasearch_agent.py
+query.txt
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environment
+my_agents/
+venv/
+env/
+ENV/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Generated PDF reports
+*.pdf
+
+# Local development settings
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local

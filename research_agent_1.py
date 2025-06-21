@@ -9,21 +9,109 @@ import json
 from datetime import datetime
 import time
 load_dotenv()
+import logging
+
+logger = logging.getLogger(__name__)
+class AsyncRateLimiter:
+    def __init__(self, max_calls, period_seconds):
+        self.max_calls = max_calls
+        self.period = period_seconds
+        self.lock = asyncio.Lock()
+        self.calls = []
+
+    async def acquire(self):
+        async with self.lock:
+            now = time.monotonic()
+            self.calls = [t for t in self.calls if now - t < self.period]
+            
+            if len(self.calls) >= self.max_calls:
+                sleep_time = self.period - (now - self.calls[0]) + 1  # Add 1 second buffer
+                logger.info(f"Rate limit reached, waiting {sleep_time:.1f} seconds...")
+                await asyncio.sleep(sleep_time)
+                now = time.monotonic()
+                self.calls = [t for t in self.calls if now - t < self.period]
+            
+            self.calls.append(time.monotonic())
 
 class LLMClient:
     def __init__(self):
         self.client = OpenAI(
-            api_key=os.getenv('GROQ_API_KEY'),  
-            base_url="https://api.groq.com/openai/v1/"
+            api_key=os.getenv('OPENROUTER_API_KEY'),
+            base_url="https://openrouter.ai/api/v1"
         )
-        self.model = "deepseek-r1-distill-llama-70b"
-
-    def chat(self, prompt):
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content.strip()
+        self.model = "deepseek/deepseek-chat-v3-0324:free"
+        # Rate limiter: 30 requests per minute (60 seconds)
+        self.rate_limiter = AsyncRateLimiter(max_calls=30, period_seconds=60)
+        # Context storage
+        self.conversation_history = []
+        self.max_context_length = 30  # Maximum number of messages to keep in context
+    
+    def add_to_context(self, role, content):
+        """Add a message to the conversation context"""
+        self.conversation_history.append({"role": role, "content": content})
+        
+        # Keep only the most recent messages to prevent context from growing too large
+        if len(self.conversation_history) > self.max_context_length:
+            self.conversation_history = self.conversation_history[-self.max_context_length:]
+    
+    def clear_context(self):
+        """Clear the conversation history"""
+        self.conversation_history = []
+    
+    def get_context(self):
+        """Get the current conversation context"""
+        return self.conversation_history.copy()
+    
+    def set_system_message(self, system_message):
+        """Set or update the system message (will be the first message in context)"""
+        # Remove existing system message if any
+        self.conversation_history = [msg for msg in self.conversation_history if msg["role"] != "system"]
+        # Add new system message at the beginning
+        self.conversation_history.insert(0, {"role": "system", "content": system_message})
+    
+    async def chat(self, prompt, use_context=True, add_to_history=True):
+        """
+        Send a chat message with rate limiting and optional context
+        
+        Args:
+            prompt: The user's message
+            use_context: Whether to include conversation history in the request
+            add_to_history: Whether to add this interaction to the conversation history
+        """
+        # Apply rate limiting
+        await self.rate_limiter.acquire()
+        
+        # Prepare messages
+        if use_context and self.conversation_history:
+            messages = self.conversation_history.copy()
+            messages.append({"role": "user", "content": prompt})
+        else:
+            messages = [{"role": "user", "content": prompt}]
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages
+            )
+            
+            assistant_response = response.choices[0].message.content.strip()
+            
+            # Add to conversation history if requested
+            if add_to_history:
+                self.add_to_context("user", prompt)
+                self.add_to_context("assistant", assistant_response)
+            
+            return assistant_response
+            
+        except Exception as e:
+            logger.error(f"Error in chat request: {e}")
+            raise
+    
+    def chat_sync(self, prompt, use_context=True, add_to_history=True):
+        """
+        Synchronous wrapper for the async chat method
+        """
+        return asyncio.run(self.chat(prompt, use_context, add_to_history))
 
 class WebScraper: 
     def __init__(self):
